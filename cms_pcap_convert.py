@@ -1,11 +1,17 @@
+#!/usr/bin/python3
+"""Convert a pcap recording of CMS telemetry to a CSV file."""
+
 import csv
 import sys
 
-import cms_decode
 from scapy.utils import PcapReader
-from scapy.layers.inet import IP, TCP
+from scapy.layers.inet import TCP
+
+import cms_decode
 
 def process_file(in_file, out_file):
+    """Read through in_file pcap and convert to csv out_file."""
+
     with PcapReader(in_file) as pcap_reader, open(out_file, 'w') as csvfile:
         csv_writer = None
         state = {}
@@ -15,12 +21,12 @@ def process_file(in_file, out_file):
                 offset = 0
                 state['time'] = pkt.time
                 while offset < len(buf):
-                    block = cms_decode.CmsDataBlock.ReadFromBytes(buf, offset)
+                    block = cms_decode.cms_read_block_from_bytes(buf, offset)
                     if hasattr(block, 'values'):
                         state.update(block.values)
                     if hasattr(block, 'leads'):
                         state.update(block.leads)
-                    if block.type == 0x47:
+                    if block.block_type == 0x47:
                         # write row
                         if not csv_writer:
                             fields = [k for k in sorted(state.keys()) if 'alarm' not in k]

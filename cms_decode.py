@@ -18,15 +18,9 @@ class CmsDataBlock:
     def __str__(self):
         data_str = " ".join(["%02x" % d for d in self.data])
         return f"message type {self.type:02x}, length {self.length:4x}, data: {data_str}"
-            
+
     @staticmethod
-    async def ReadFromStream(stream):
-        length, = struct.unpack("<H", await stream.read(2))
-        assert length >= 2
-        hdr, type = struct.unpack("<BB", await stream.read(2))
-        assert hdr == 0x05
-        length -= 2
-        data = await stream.read(length)
+    def _GetBlock(length, type, data):
         try:
             if type == 0x3E:
                 return CmsDataBlock3E(length, data)
@@ -47,6 +41,26 @@ class CmsDataBlock:
             sys.stderr.write(f"Error during decode block type {type:02x} length {length:04x} data {data_str}\n")
             raise e
 
+    @staticmethod
+    def ReadFromBytes(data, offset = 0):
+        length, = struct.unpack("<H", data[offset:offset+2])
+        assert length >= 2
+        hdr, type = struct.unpack("<BB", data[offset+2:offset+4])
+        assert hdr == 0x05
+        length -= 2
+        data = data[offset+4:offset+4+length]
+        return CmsDataBlock._GetBlock(length, type, data)
+    
+    @staticmethod
+    async def ReadFromStream(stream):
+        length, = struct.unpack("<H", await stream.read(2))
+        assert length >= 2
+        hdr, type = struct.unpack("<BB", await stream.read(2))
+        assert hdr == 0x05
+        length -= 2
+        data = await stream.read(length)
+        return CmsDataBlock._GetBlock(length, type, data)
+    
 
 def _decode(data):
     return data.decode().strip('\x00')
@@ -117,21 +131,8 @@ class CmsDataBlock46(CmsDataBlock):
         self.leads = {}
         self.values = {}
         self.unk = {}
-        if self.lead == 0x15:
-            self.leads['pleth'] = [int(d) for d in data[0x4:0x104]]
-            spo2, spo2_attached, spo2_hr, spo2_valid = struct.unpack("<BBBB", data[0x104:0x108])
-            assert spo2_attached == 0 or spo2_attached == 255
-            spo2_attached = spo2_attached == 0
-            assert spo2_valid == 0 or spo2_valid == 255
-            spo2_valid = spo2_valid == 0
-            if not spo2_valid:
-                assert spo2 == 255 and spo2_hr == 255
-            self.values['SpO2'] = spo2 if spo2_valid else None
-            self.values['SpO2_attached'] = spo2_attached
-            self.values['SpO2_HR'] = spo2_hr if spo2_valid else None
-            self.values['SpO2_valid'] = spo2_valid
-            self.unk['unk_108'] = " ".join("%02x" % d for d in data[0x108:])
-        elif self.lead == 0x14:
+
+        if self.lead == 0x14:
             self.leads['ecg1'] = [int(d) for d in data[0x4:0x104]]
             self.leads['ecg2'] = [int(d) for d in data[0x104:0x204]]
             self.leads['ecg3'] = [int(d) for d in data[0x204:0x304]]
@@ -141,37 +142,93 @@ class CmsDataBlock46(CmsDataBlock):
             hr_valid = hr_valid == 0
             assert rr_valid == 0 or rr_valid == 255
             rr_valid = rr_valid == 0
-            self.values['HR'] = hr if hr_valid else None
-            self.values['HR_valid'] = hr_valid
-            self.values['RR'] = rr if rr_valid else None
-            self.values['RR_valid'] = rr_valid
-            self.unk['unk_388_f'], self.unk['unk_38c_f'], self.unk['unk_390_f'] = struct.unpack("<fff", data[0x388:0x394])
-            self.unk['unk_394'] = " ".join("%02x" % d for d in data[0x394:0x3AF])
-            self.unk['unk_3af_f'], self.unk['unk_3b3_f'], self.unk['unk_3b7_d'], self.unk['unk_3b9_f'], self.unk['unk_3bb_f'], self.unk['unk_3bf_d'], self.unk['unk_3c1_f'], self.unk['unk_3c5_f'], self.unk['unk_3c9_d'] = struct.unpack("<ffHffHffH", data[0x3AF:0x3CD])
-            self.unk['unk_3cd'] = " ".join("%02x" % d for d in data[0x3CD:])
-        elif self.lead == 0x16:
-            bp_year, bp_mon, bp_day, bp_hr, bp_min, bp_sec, bp_sys, bp_dia, bp_map = struct.unpack("<HBBBBBHHH", data[0x04:0x11])
-            self.values['NIBP_time'] = datetime.datetime(bp_year, bp_mon, bp_day, bp_hr, bp_min, bp_sec)
-            self.values['NIBP_sys'] = bp_sys
-            self.values['NIBP_dia'] = bp_dia
-            self.values['NIBP_map'] = bp_map
-            self.unk['unk_11'] = " ".join("%02x" % d for d in data[0x11:])
-        elif self.lead == 0x17:
-            t1, t2, td, t1_max, t1_min, t1_alm, t2_max, t2_min, t2_alm, td_max, td_min, td_alm = struct.unpack("<fffffHffHffH", data[0x04:0x2E])
-            for i in range(0x2E, len(data)):
+            self.values['hr'] = hr if hr_valid else None
+            self.values['hr_valid'] = hr_valid
+            self.values['resp'] = rr if rr_valid else None
+            self.values['resp_valid'] = rr_valid
+            (self.unk['unk_388_f'], self.unk['unk_38c_f'], self.unk['unk_390_f']
+             ) = struct.unpack("<fff", data[0x388:0x394])
+            hr_max, hr_min, hr_alm, resp_max, resp_min, resp_alm = struct.unpack("<HHHHHH", data[0x3A3:0x3AF])
+            self.values['alarm/hr_max'] = hr_max
+            self.values['alarm/hr_min'] = hr_min
+            self.values['alarm/hr_set'] = hr_alm
+            self.values['alarm/resp_max'] = resp_max
+            self.values['alarm/resp_min'] = resp_min
+            self.values['alarm/resp_set'] = resp_alm
+            self.unk['unk_394'] = " ".join("%02x" % d for d in data[0x394:0x3A3])
+            (self.unk['unk_3af_f'], self.unk['unk_3b3_f'], self.unk['unk_3b7_d'],
+             self.unk['unk_3b9_f'], self.unk['unk_3bb_f'], self.unk['unk_3bf_d'],
+             self.unk['unk_3c1_f'], self.unk['unk_3c5_f'], self.unk['unk_3c9_d']
+             ) = struct.unpack("<ffHffHffH", data[0x3AF:0x3CD])
+            pvc_max, pvc_min, pvc_alm = struct.unpack("<HHH", data[0x3CD:0x3D3])
+            self.values['alarm/pvc_min'] = pvc_min
+            self.values['alarm/pvc_max'] = pvc_max
+            self.values['alarm/pvc_set'] = pvc_alm
+            for i in range(0x3D3, len(data)):
                 assert data[i] == 0
+
+        elif self.lead == 0x15:
+            self.leads['pleth'] = [int(d) for d in data[0x4:0x104]]
+            spo2, spo2_attached, spo2_hr, spo2_valid = struct.unpack("<BBBB", data[0x104:0x108])
+            assert spo2_attached == 0 or spo2_attached == 255
+            spo2_attached = spo2_attached == 0
+            assert spo2_valid == 0 or spo2_valid == 255
+            spo2_valid = spo2_valid == 0
+            if not spo2_valid:
+                assert spo2 == 255 and spo2_hr == 255
+            (spo2_min, spo2_max, spo2_alm, spo2_hr_min, spo2_hr_max, spo2_hr_alm
+             ) = struct.unpack("<HHHHHH", data[0x108:0x114])
+            self.values['spo2'] = spo2 if spo2_valid else None
+            self.values['spo2_attached'] = spo2_attached
+            self.values['spo2_hr'] = spo2_hr if spo2_valid else None
+            self.values['spo2_valid'] = spo2_valid
+            self.values['alarm/spo2_max'] = spo2_max
+            self.values['alarm/spo2_min'] = spo2_min
+            self.values['alarm/spo2_set'] = spo2_alm
+            self.values['alarm/spo2_hr_max'] = spo2_hr_max
+            self.values['alarm/spo2_hr_min'] = spo2_hr_min
+            self.values['alarm/spo2_hr_set'] = spo2_hr_alm
+            for i in range(0x114, len(data)):
+                assert data[i] == 0
+
+        elif self.lead == 0x16:
+            (bp_year, bp_mon, bp_day, bp_hr, bp_min, bp_sec, bp_sys, bp_dia, bp_map
+             ) = struct.unpack("<HBBBBBHHH", data[0x04:0x11])
+            self.values['nibp_time'] = datetime.datetime(bp_year, bp_mon, bp_day, bp_hr, bp_min, bp_sec)
+            self.values['nibp_sys'] = bp_sys
+            self.values['nibp_dia'] = bp_dia
+            self.values['nibp_map'] = bp_map
+            (bp_sys_max, bp_sys_min, bp_sys_alm, bp_dia_max, bp_dia_min, bp_dia_alm,
+             bp_map_max, bp_map_min, bp_map_alm) = struct.unpack("<HHHHHHHHH", data[0x11:0x23])
+            self.values['alarm/bp_sys_max'] = bp_sys_max
+            self.values['alarm/bp_sys_min'] = bp_sys_min
+            self.values['alarm/bp_sys_set'] = bp_sys_alm
+            self.values['alarm/bp_dia_max'] = bp_dia_max
+            self.values['alarm/bp_dia_min'] = bp_dia_min
+            self.values['alarm/bp_dia_set'] = bp_dia_alm
+            self.values['alarm/bp_map_max'] = bp_map_max
+            self.values['alarm/bp_map_min'] = bp_map_min
+            self.values['alarm/bp_map_set'] = bp_map_alm
+            for i in range(0x23, len(data)):
+                assert data[i] == 0
+
+        elif self.lead == 0x17:
+            (t1, t2, td, t1_max, t1_min, t1_alm, t2_max, t2_min, t2_alm, td_max, td_min, td_alm
+             ) = struct.unpack("<fffffHffHffH", data[0x04:0x2E])
             self.values['t1'] = t1
             self.values['t2'] = t2
             self.values['td'] = td
-            self.values['t1_alm_max'] = t1_max
-            self.values['t1_alm_min'] = t1_min
-            self.values['t1_alm'] = t1_alm
-            self.values['t2_alm_max'] = t2_max
-            self.values['t2_alm_min'] = t2_min
-            self.values['t2_alm'] = t2_alm
-            self.values['td_alm_max'] = td_max
-            self.values['td_alm_min'] = td_min
-            self.values['td_alm'] = td_alm
+            self.values['alarm/t1_max'] = t1_max
+            self.values['alarm/t1_min'] = t1_min
+            self.values['alarm/t1_set'] = t1_alm
+            self.values['alarm/t2_max'] = t2_max
+            self.values['alarm/t2_min'] = t2_min
+            self.values['alarm/t2_set'] = t2_alm
+            self.values['alarm/td_max'] = td_max
+            self.values['alarm/td_min'] = td_min
+            self.values['alarm/td_set'] = td_alm
+            for i in range(0x2E, len(data)):
+                assert data[i] == 0
         else:
             self.unk['unk_4'] = " ".join("%02x" % d for d in data[0x4:])
                           
